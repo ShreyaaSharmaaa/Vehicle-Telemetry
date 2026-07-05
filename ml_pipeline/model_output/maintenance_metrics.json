@@ -1,0 +1,6 @@
+{
+  "roc_auc": 0.9956,
+  "pr_auc": 0.9936,
+  "train_vehicles": 35,
+  "test_vehicles": 15
+}
