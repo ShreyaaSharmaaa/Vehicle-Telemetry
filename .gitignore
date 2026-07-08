@@ -6,3 +6,6 @@ test_data/
 *.csv
 .vscode/
 data_anomaly_test/
+
+fleet_dashboard/node_modules/
+fleet_dashboard/dist/
