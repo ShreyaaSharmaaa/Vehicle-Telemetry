@@ -87,3 +87,12 @@ class VehicleOut(BaseModel):
     vehicle_id: str
     odometer_km: float
     added_at: datetime
+
+
+class AlertOut(BaseModel):
+    alert_type: str  # "risk" | "maintenance"
+    vehicle_id: str
+    severity: str
+    message: str
+    occurred_at: datetime
+    reference_id: str  # trip_id for risk alerts, vehicle_id for maintenance alerts

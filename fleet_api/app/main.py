@@ -16,6 +16,7 @@ from typing import List
 
 import pandas as pd
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
@@ -28,6 +29,17 @@ app = FastAPI(
     description="Serves driver risk scoring and predictive maintenance models "
                 "for the fleet telemetry platform.",
     version="0.1.0",
+)
+
+# The React dev server runs on a different port (Vite default: 5173), and
+# browsers block cross-origin requests by default. "*" origins would also
+# work for a demo, but naming the actual dev server port is more honest
+# about what a real deployment would restrict this to.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -79,6 +91,11 @@ def get_trip(trip_id: str, db: Session = Depends(get_db)):
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
     return trip
+
+
+@app.get("/vehicles", response_model=List[schemas.VehicleOut])
+def list_vehicles(db: Session = Depends(get_db)):
+    return db.execute(select(models.Vehicle).order_by(models.Vehicle.vehicle_id)).scalars().all()
 
 
 @app.get("/vehicles/{vehicle_id}", response_model=schemas.VehicleOut)
@@ -158,6 +175,58 @@ def get_maintenance_prediction(vehicle_id: str, db: Session = Depends(get_db)):
         predicted_at=datetime.utcnow(),
         trips_used_for_prediction=len(rows),
     )
+
+
+@app.get("/alerts", response_model=List[schemas.AlertOut])
+def get_alerts(limit: int = 50, db: Session = Depends(get_db)):
+    """
+    A unified feed of everything a fleet manager should look at right now:
+    High/Critical risk trips and High/Critical maintenance predictions,
+    merged and sorted by recency. This is a DERIVED view computed from
+    risk_scores + maintenance_predictions, not the (currently unused)
+    `alerts` table in schema.sql -- that table exists for a future phase
+    where alerts become persistent, dismissible, assignable objects with
+    their own lifecycle. For now, "what needs attention" is cheap enough
+    to compute live from data we already have.
+    """
+    risk_rows = db.execute(
+        select(models.RiskScore, models.Trip.vehicle_id, models.Trip.trip_start_time)
+        .join(models.Trip, models.Trip.trip_id == models.RiskScore.trip_id)
+        .where(models.RiskScore.risk_tier.in_(["High", "Critical"]))
+        .order_by(models.Trip.trip_start_time.desc())
+        .limit(limit)
+    ).all()
+
+    maintenance_rows = db.execute(
+        select(models.MaintenancePrediction, models.Trip.trip_start_time)
+        .join(models.Trip, models.Trip.trip_id == models.MaintenancePrediction.trip_id)
+        .where(models.MaintenancePrediction.risk_tier.in_(["High", "Critical"]))
+        .order_by(models.Trip.trip_start_time.desc())
+        .limit(limit)
+    ).all()
+
+    alerts = []
+    for risk_score, vehicle_id, trip_start_time in risk_rows:
+        alerts.append(schemas.AlertOut(
+            alert_type="risk",
+            vehicle_id=vehicle_id,
+            severity=risk_score.risk_tier.lower(),
+            message=f"Trip scored {risk_score.risk_score:.1f} risk ({risk_score.risk_tier})",
+            occurred_at=trip_start_time,
+            reference_id=risk_score.trip_id,
+        ))
+    for pred, trip_start_time in maintenance_rows:
+        alerts.append(schemas.AlertOut(
+            alert_type="maintenance",
+            vehicle_id=pred.vehicle_id,
+            severity=pred.risk_tier.lower(),
+            message=f"{pred.failure_probability*100:.1f}% failure probability within 30 days",
+            occurred_at=trip_start_time,
+            reference_id=pred.vehicle_id,
+        ))
+
+    alerts.sort(key=lambda a: a.occurred_at, reverse=True)
+    return alerts[:limit]
 
 
 @app.get("/fleet/summary", response_model=schemas.FleetSummaryOut)
